@@ -1,0 +1,7 @@
+output_file: events.log
+
+channels:
+  - Application
+  - System
+  - Security # Requires elevated privileges
+  # - Microsoft-Windows-PowerShell/Operational
