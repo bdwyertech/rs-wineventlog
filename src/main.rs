@@ -175,18 +175,19 @@ unsafe fn render_event(event: EVT_HANDLE, pretty: bool) -> Option<String> {
             let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
             let xml = String::from_utf16_lossy(&buffer[..len]);
 
-            // Parse XML and convert to JSON
             match Document::parse(&xml) {
                 Ok(doc) => {
                     if let Some(root) = doc.root_element().first_element_child() {
-                        let v = element_to_json(root);
+                        let mut v = element_to_json(root);
+                        enrich_event_metadata(event, &mut v);
                         if pretty {
                             serde_json::to_string_pretty(&v).ok()
                         } else {
                             serde_json::to_string(&v).ok()
                         }
                     } else {
-                        let v = element_to_json(doc.root_element());
+                        let mut v = element_to_json(doc.root_element());
+                        enrich_event_metadata(event, &mut v);
                         if pretty {
                             serde_json::to_string_pretty(&v).ok()
                         } else {
@@ -196,6 +197,70 @@ unsafe fn render_event(event: EVT_HANDLE, pretty: bool) -> Option<String> {
                 }
                 Err(_) => None,
             }
+        } else {
+            None
+        }
+    }
+}
+
+unsafe fn enrich_event_metadata(event: EVT_HANDLE, json: &mut JsonValue) {
+    unsafe {
+        if let Some(obj) = json.as_object_mut() {
+            // Enrich Keywords
+            if obj.contains_key("Keywords") {
+                if let Some(keywords_str) = format_message(event, EvtFormatMessageKeyword) {
+                    obj.insert("Keywords".to_string(), JsonValue::String(keywords_str));
+                }
+            }
+            
+            // Enrich Level
+            if obj.contains_key("Level") {
+                if let Some(level_str) = format_message(event, EvtFormatMessageLevel) {
+                    obj.insert("Level".to_string(), JsonValue::String(level_str));
+                }
+            }
+            
+            // Enrich Task
+            if obj.contains_key("Task") {
+                if let Some(task_str) = format_message(event, EvtFormatMessageTask) {
+                    obj.insert("Task".to_string(), JsonValue::String(task_str));
+                }
+            }
+            
+            // Enrich Opcode
+            if obj.contains_key("Opcode") {
+                if let Some(opcode_str) = format_message(event, EvtFormatMessageOpcode) {
+                    obj.insert("Opcode".to_string(), JsonValue::String(opcode_str));
+                }
+            }
+        }
+    }
+}
+
+unsafe fn format_message(event: EVT_HANDLE, format_id: EVT_FORMAT_MESSAGE_FLAGS) -> Option<String> {
+    unsafe {
+        let mut buffer_size = 0u32;
+        let _ = EvtFormatMessage(None, event, 0, None, format_id.0 as u32, None, &mut buffer_size);
+        
+        if buffer_size == 0 {
+            return None;
+        }
+        
+        let mut buffer = vec![0u16; buffer_size as usize];
+        
+        if EvtFormatMessage(
+            None,
+            event,
+            0,
+            None,
+            format_id.0 as u32,
+            Some(&mut buffer),
+            &mut buffer_size,
+        )
+        .is_ok()
+        {
+            let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
+            Some(String::from_utf16_lossy(&buffer[..len]))
         } else {
             None
         }
