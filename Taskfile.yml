@@ -1,0 +1,11 @@
+version: '3'
+
+tasks:
+  build:
+    desc: Build release binary for Windows
+    cmds:
+      - cargo build --release --target x86_64-pc-windows-gnu
+
+  prerelease:
+    cmds:
+      - goreleaser --snapshot --clean --skip sign

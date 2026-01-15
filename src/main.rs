@@ -4,7 +4,7 @@ use roxmltree::Document;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{self, Write};
 use std::os::windows::prelude::OsStrExt;
 use windows::core::PCWSTR;
 use windows::Win32::System::EventLog::*;
@@ -14,17 +14,19 @@ use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
 #[derive(Deserialize)]
 struct Config {
-    output_file: String,
+    output_file: Option<String>,
     channels: Vec<String>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config: Config = serde_yaml::from_str(&fs::read_to_string("config.yaml")?)?;
+    if std::env::args().any(|a| a == "list-channels") {
+        list_channels()?;
+        return Ok(());
+    }
 
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&config.output_file)?;
+    let exe_dir = std::env::current_exe()?.parent().unwrap().to_path_buf();
+    let config_path = exe_dir.join("config.yaml");
+    let config: Config = serde_yaml::from_str(&fs::read_to_string(config_path)?)?;
 
     let signal = unsafe { CreateEventW(None, false, false, None)? };
 
@@ -73,7 +75,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("No channels subscribed".into());
     }
 
-    println!("Writing to: {}", config.output_file);
+    enum Output {
+        File(std::fs::File),
+        Stdout(io::StdoutLock<'static>),
+    }
+
+    let mut output = match &config.output_file {
+        Some(path) => Output::File(OpenOptions::new().create(true).append(true).open(path)?),
+        None => Output::Stdout(Box::leak(Box::new(io::stdout())).lock()),
+    };
 
     loop {
         for sub in &subscriptions {
@@ -86,9 +96,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if EvtNext(*sub, events_slice, 100, 0, &mut returned).is_ok() {
                     for i in 0..returned as usize {
                         if let Some(json) = render_event(events[i]) {
-                            writeln!(file, "{}", json)?;
-                            file.flush()?;
-                            println!("Event captured (JSON)");
+                            match &mut output {
+                                Output::File(f) => writeln!(f, "{}", json)?,
+                                Output::Stdout(s) => writeln!(s, "{}", json)?,
+                            }
                         }
                         let _ = EvtClose(events[i]);
                     }
@@ -99,51 +110,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 unsafe fn render_event(event: EVT_HANDLE) -> Option<String> {
-    let mut used = 0u32;
-    let mut props = 0u32;
+    unsafe {
+        let mut used = 0u32;
+        let mut props = 0u32;
 
-    let _ = EvtRender(
-        None,
-        event,
-        EvtRenderEventXml.0 as u32,
-        0,
-        None,
-        &mut used,
-        &mut props,
-    );
+        let _ = EvtRender(
+            None,
+            event,
+            EvtRenderEventXml.0 as u32,
+            0,
+            None,
+            &mut used,
+            &mut props,
+        );
 
-    let mut buffer: Vec<u16> = vec![0; (used / 2) as usize + 1];
+        let mut buffer: Vec<u16> = vec![0; (used / 2) as usize + 1];
 
-    if EvtRender(
-        None,
-        event,
-        EvtRenderEventXml.0 as u32,
-        used,
-        Some(buffer.as_mut_ptr() as *mut _),
-        &mut used,
-        &mut props,
-    )
-    .is_ok()
-    {
-        let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
-        let xml = String::from_utf16_lossy(&buffer[..len]);
+        if EvtRender(
+            None,
+            event,
+            EvtRenderEventXml.0 as u32,
+            used,
+            Some(buffer.as_mut_ptr() as *mut _),
+            &mut used,
+            &mut props,
+        )
+        .is_ok()
+        {
+            let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
+            let xml = String::from_utf16_lossy(&buffer[..len]);
 
-        // Parse XML and convert to JSON
-        match Document::parse(&xml) {
-            Ok(doc) => {
-                if let Some(root) = doc.root_element().first_element_child() {
-                    let v = element_to_json(root);
-                    serde_json::to_string(&v).ok()
-                } else {
-                    // If root has no element children, convert the root element
-                    let v = element_to_json(doc.root_element());
-                    serde_json::to_string(&v).ok()
+            // Parse XML and convert to JSON
+            match Document::parse(&xml) {
+                Ok(doc) => {
+                    if let Some(root) = doc.root_element().first_element_child() {
+                        let v = element_to_json(root);
+                        serde_json::to_string(&v).ok()
+                    } else {
+                        // If root has no element children, convert the root element
+                        let v = element_to_json(doc.root_element());
+                        serde_json::to_string(&v).ok()
+                    }
                 }
+                Err(_) => None,
             }
-            Err(_) => None,
+        } else {
+            None
         }
-    } else {
-        None
     }
 }
 
@@ -240,4 +253,24 @@ fn element_to_json(node: roxmltree::Node) -> JsonValue {
     }
 
     JsonValue::Object(map)
+}
+
+fn list_channels() -> Result<(), Box<dyn std::error::Error>> {
+    unsafe {
+        let channel_enum = EvtOpenChannelEnum(None, 0)?;
+        
+        let mut buffer = vec![0u16; 512];
+        loop {
+            let mut used = 0u32;
+            if EvtNextChannelPath(channel_enum, Some(&mut buffer), &mut used).is_ok() {
+                let channel = String::from_utf16_lossy(&buffer[..used as usize - 1]);
+                println!("{}", channel);
+            } else {
+                break;
+            }
+        }
+        
+        let _ = EvtClose(channel_enum);
+    }
+    Ok(())
 }
