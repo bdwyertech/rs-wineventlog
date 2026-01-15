@@ -1,5 +1,6 @@
 #![cfg(windows)]
 
+use clap::{Parser, Subcommand};
 use roxmltree::Document;
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
@@ -12,6 +13,28 @@ use windows::Win32::System::Threading::CreateEventW;
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
+#[derive(Parser)]
+#[command(name = "rs-wineventlog")]
+#[command(about = "Windows Event Log monitor and exporter", long_about = None)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+    
+    /// Path to config file (defaults to config.yaml in binary directory)
+    #[arg(short, long)]
+    config: Option<String>,
+    
+    /// Output JSON in pretty format
+    #[arg(short, long)]
+    pretty_json: bool,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// List all available Windows Event Log channels
+    ListChannels,
+}
+
 #[derive(Deserialize)]
 struct Config {
     output_file: Option<String>,
@@ -19,13 +42,25 @@ struct Config {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    if std::env::args().any(|a| a == "list-channels") {
-        list_channels()?;
-        return Ok(());
+    let cli = Cli::parse();
+
+    match cli.command {
+        Some(Commands::ListChannels) => list_channels()?,
+        None => monitor(cli.config, cli.pretty_json)?,
     }
 
-    let exe_dir = std::env::current_exe()?.parent().unwrap().to_path_buf();
-    let config_path = exe_dir.join("config.yaml");
+    Ok(())
+}
+
+fn monitor(config_path: Option<String>, pretty: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let config_path = match config_path {
+        Some(path) => path.into(),
+        None => {
+            let exe_dir = std::env::current_exe()?.parent().unwrap().to_path_buf();
+            exe_dir.join("config.yaml")
+        }
+    };
+
     let config: Config = serde_yaml::from_str(&fs::read_to_string(config_path)?)?;
 
     let signal = unsafe { CreateEventW(None, false, false, None)? };
@@ -95,7 +130,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     std::slice::from_raw_parts_mut(events.as_mut_ptr() as *mut isize, events.len());
                 if EvtNext(*sub, events_slice, 100, 0, &mut returned).is_ok() {
                     for i in 0..returned as usize {
-                        if let Some(json) = render_event(events[i]) {
+                        if let Some(json) = render_event(events[i], pretty) {
                             match &mut output {
                                 Output::File(f) => writeln!(f, "{}", json)?,
                                 Output::Stdout(s) => writeln!(s, "{}", json)?,
@@ -109,7 +144,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-unsafe fn render_event(event: EVT_HANDLE) -> Option<String> {
+unsafe fn render_event(event: EVT_HANDLE, pretty: bool) -> Option<String> {
     unsafe {
         let mut used = 0u32;
         let mut props = 0u32;
@@ -145,11 +180,18 @@ unsafe fn render_event(event: EVT_HANDLE) -> Option<String> {
                 Ok(doc) => {
                     if let Some(root) = doc.root_element().first_element_child() {
                         let v = element_to_json(root);
-                        serde_json::to_string(&v).ok()
+                        if pretty {
+                            serde_json::to_string_pretty(&v).ok()
+                        } else {
+                            serde_json::to_string(&v).ok()
+                        }
                     } else {
-                        // If root has no element children, convert the root element
                         let v = element_to_json(doc.root_element());
-                        serde_json::to_string(&v).ok()
+                        if pretty {
+                            serde_json::to_string_pretty(&v).ok()
+                        } else {
+                            serde_json::to_string(&v).ok()
+                        }
                     }
                 }
                 Err(_) => None,

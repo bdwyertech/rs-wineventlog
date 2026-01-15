@@ -15,6 +15,7 @@ inherits = "release"
 lto = "thin"
 
 [dependencies]
+clap = { version = "4.5", features = ["derive"] }
 windows = { version = "0.58", features = [
     "Win32_System_EventLog",
     "Win32_System_Threading",
