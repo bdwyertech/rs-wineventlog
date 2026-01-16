@@ -65,8 +65,6 @@ fn monitor(config_path: Option<String>, pretty: bool) -> Result<(), Box<dyn std:
 
     let signal = unsafe { CreateEventW(None, false, false, None)? };
 
-    const ACCESS_DENIED: i32 = 0x80070005u32 as i32;
-
     let subscriptions: Vec<_> = config
         .channels
         .iter()
@@ -89,7 +87,7 @@ fn monitor(config_path: Option<String>, pretty: bool) -> Result<(), Box<dyn std:
                     }
                     Err(e) => {
                         eprintln!("Failed to subscribe to {}: {:?}", ch, e);
-                        if e.code().0 == ACCESS_DENIED {
+                        if e.code() == windows::Win32::Foundation::E_ACCESSDENIED {
                             eprintln!(
                                 "Access denied subscribing to {} — attempting to relaunch elevated",
                                 ch
