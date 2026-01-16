@@ -1,4 +1,5 @@
 use crate::{output::Output, privilege, xml};
+use glob_match::glob_match;
 use serde_json::Value as JsonValue;
 use std::io::Write;
 use windows::Win32::System::EventLog::*;
@@ -6,21 +7,29 @@ use windows::Win32::System::Threading::CreateEventW;
 use windows::core::PCWSTR;
 
 pub fn list_channels() -> Result<(), Box<dyn std::error::Error>> {
+    for channel in get_available_channels()? {
+        println!("{}", channel);
+    }
+    Ok(())
+}
+
+fn get_available_channels() -> Result<Vec<String>, Box<dyn std::error::Error>> {
     unsafe {
         let channel_enum = EvtOpenChannelEnum(None, 0)?;
+        let mut channels = Vec::new();
         let mut buffer = vec![0u16; 512];
         loop {
             let mut used = 0u32;
             if EvtNextChannelPath(channel_enum, Some(&mut buffer), &mut used).is_ok() {
                 let channel = String::from_utf16_lossy(&buffer[..used as usize - 1]);
-                println!("{}", channel);
+                channels.push(channel);
             } else {
                 break;
             }
         }
         let _ = EvtClose(channel_enum);
+        Ok(channels)
     }
-    Ok(())
 }
 
 pub fn monitor(
@@ -28,9 +37,35 @@ pub fn monitor(
     mut output: Output,
     pretty: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let available = get_available_channels()?;
+    
+    let mut valid_channels = Vec::new();
+    for pattern in channels {
+        if pattern.contains('*') || pattern.contains('?') {
+            let matches: Vec<_> = available.iter()
+                .filter(|ch| glob_match(pattern, ch))
+                .cloned()
+                .collect();
+            if matches.is_empty() {
+                eprintln!("Warning: No channels match pattern '{}'", pattern);
+            } else {
+                println!("Pattern '{}' matched {} channel(s)", pattern, matches.len());
+                valid_channels.extend(matches);
+            }
+        } else if available.contains(pattern) {
+            valid_channels.push(pattern.clone());
+        } else {
+            eprintln!("Warning: Channel '{}' does not exist, skipping", pattern);
+        }
+    }
+
+    if valid_channels.is_empty() {
+        return Err("No valid channels to subscribe to".into());
+    }
+
     let signal = unsafe { CreateEventW(None, false, false, None)? };
 
-    let subscriptions: Vec<_> = channels
+    let subscriptions: Vec<_> = valid_channels
         .iter()
         .filter_map(|ch| {
             let wide: Vec<u16> = ch.encode_utf16().chain(std::iter::once(0)).collect();
@@ -115,7 +150,24 @@ unsafe fn render_event(event: EVT_HANDLE, pretty: bool) -> Option<String> {
             let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
             let xml = String::from_utf16_lossy(&buffer[..len]);
             let mut v = xml::parse_to_json(&xml)?;
+            
+            // Get provider name from parsed JSON
+            let provider_name = v.get("Provider")
+                .and_then(|p| p.get("@Name"))
+                .and_then(|n| n.as_str())
+                .map(|s| s.to_string());
+            
             enrich_metadata(event, &mut v);
+            
+            // Add friendly message with provider metadata
+            if let Some(prov) = provider_name {
+                if let Some(msg) = format_event_message(event, &prov) {
+                    if let Some(obj) = v.as_object_mut() {
+                        obj.insert("Message".to_string(), JsonValue::String(msg));
+                    }
+                }
+            }
+            
             if pretty {
                 serde_json::to_string_pretty(&v).ok()
             } else {
@@ -179,5 +231,55 @@ unsafe fn format_message(event: EVT_HANDLE, format_id: EVT_FORMAT_MESSAGE_FLAGS)
         } else {
             None
         }
+    }
+}
+
+unsafe fn format_event_message(event: EVT_HANDLE, provider_name: &str) -> Option<String> {
+    unsafe {
+        let provider_wide: Vec<u16> = provider_name.encode_utf16().chain(std::iter::once(0)).collect();
+
+        // Open provider metadata
+        let metadata = match EvtOpenPublisherMetadata(None, PCWSTR(provider_wide.as_ptr()), None, 0, 0) {
+            Ok(m) => m,
+            Err(_) => return None,
+        };
+
+        // Format message with provider metadata
+        let mut msg_buffer_size = 0u32;
+        let _ = EvtFormatMessage(
+            Some(metadata),
+            Some(event),
+            0,
+            None,
+            EvtFormatMessageEvent.0 as u32,
+            None,
+            &mut msg_buffer_size,
+        );
+
+        if msg_buffer_size == 0 {
+            let _ = EvtClose(metadata);
+            return None;
+        }
+
+        let mut msg_buffer = vec![0u16; msg_buffer_size as usize];
+        let result = if EvtFormatMessage(
+            Some(metadata),
+            Some(event),
+            0,
+            None,
+            EvtFormatMessageEvent.0 as u32,
+            Some(&mut msg_buffer),
+            &mut msg_buffer_size,
+        )
+        .is_ok()
+        {
+            let len = msg_buffer.iter().position(|&c| c == 0).unwrap_or(msg_buffer.len());
+            Some(String::from_utf16_lossy(&msg_buffer[..len]))
+        } else {
+            None
+        };
+
+        let _ = EvtClose(metadata);
+        result
     }
 }
