@@ -1,6 +1,10 @@
 use std::env;
 
 fn main() {
+    if env::var("CARGO_CFG_TARGET_OS").unwrap() != "windows" {
+        panic!("This crate only supports Windows");
+    }
+
     if let Ok(version) = env::var("BUILD_VERSION") {
         let clean_version = version
             .strip_prefix('v')
