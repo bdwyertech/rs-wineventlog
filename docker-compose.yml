@@ -1,0 +1,9 @@
+services:
+  builder:
+    build:
+      context: .
+      dockerfile: Dockerfile.build
+    working_dir: /app
+    volumes:
+      - ./:/app
+    command: /usr/bin/goreleaser --snapshot --clean --skip sign,sbom

@@ -7,11 +7,11 @@ use serde_json::Value as JsonValue;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::os::windows::prelude::OsStrExt;
-use windows::core::PCWSTR;
 use windows::Win32::System::EventLog::*;
 use windows::Win32::System::Threading::CreateEventW;
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+use windows::core::PCWSTR;
 
 #[derive(Parser)]
 #[command(name = "rs-wineventlog")]
@@ -19,11 +19,11 @@ use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
-    
+
     /// Path to config file (defaults to config.yaml in binary directory)
     #[arg(short, long)]
     config: Option<String>,
-    
+
     /// Output JSON in pretty format
     #[arg(short, long)]
     pretty_json: bool,
@@ -75,7 +75,7 @@ fn monitor(config_path: Option<String>, pretty: bool) -> Result<(), Box<dyn std:
             unsafe {
                 match EvtSubscribe(
                     None,
-                    signal,
+                    Some(signal),
                     PCWSTR(wide.as_ptr()),
                     PCWSTR::null(),
                     None,
@@ -212,21 +212,21 @@ unsafe fn enrich_event_metadata(event: EVT_HANDLE, json: &mut JsonValue) {
                     obj.insert("Keywords".to_string(), JsonValue::String(keywords_str));
                 }
             }
-            
+
             // Enrich Level
             if obj.contains_key("Level") {
                 if let Some(level_str) = format_message(event, EvtFormatMessageLevel) {
                     obj.insert("Level".to_string(), JsonValue::String(level_str));
                 }
             }
-            
+
             // Enrich Task
             if obj.contains_key("Task") {
                 if let Some(task_str) = format_message(event, EvtFormatMessageTask) {
                     obj.insert("Task".to_string(), JsonValue::String(task_str));
                 }
             }
-            
+
             // Enrich Opcode
             if obj.contains_key("Opcode") {
                 if let Some(opcode_str) = format_message(event, EvtFormatMessageOpcode) {
@@ -240,17 +240,25 @@ unsafe fn enrich_event_metadata(event: EVT_HANDLE, json: &mut JsonValue) {
 unsafe fn format_message(event: EVT_HANDLE, format_id: EVT_FORMAT_MESSAGE_FLAGS) -> Option<String> {
     unsafe {
         let mut buffer_size = 0u32;
-        let _ = EvtFormatMessage(None, event, 0, None, format_id.0 as u32, None, &mut buffer_size);
-        
+        let _ = EvtFormatMessage(
+            None,
+            Some(event),
+            0,
+            None,
+            format_id.0 as u32,
+            None,
+            &mut buffer_size,
+        );
+
         if buffer_size == 0 {
             return None;
         }
-        
+
         let mut buffer = vec![0u16; buffer_size as usize];
-        
+
         if EvtFormatMessage(
             None,
-            event,
+            Some(event),
             0,
             None,
             format_id.0 as u32,
@@ -365,7 +373,7 @@ fn element_to_json(node: roxmltree::Node) -> JsonValue {
 fn list_channels() -> Result<(), Box<dyn std::error::Error>> {
     unsafe {
         let channel_enum = EvtOpenChannelEnum(None, 0)?;
-        
+
         let mut buffer = vec![0u16; 512];
         loop {
             let mut used = 0u32;
@@ -376,7 +384,7 @@ fn list_channels() -> Result<(), Box<dyn std::error::Error>> {
                 break;
             }
         }
-        
+
         let _ = EvtClose(channel_enum);
     }
     Ok(())

@@ -1,0 +1,5 @@
+FROM goreleaser/goreleaser:latest AS goreleaser
+
+FROM ghcr.io/bdwyertech/rust-crosscompile:latest
+
+COPY --from=goreleaser /usr/bin/goreleaser /usr/bin/goreleaser

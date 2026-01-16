@@ -2,6 +2,8 @@
 name = "rs-wineventlog"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.92"
+repository = "https://github.com/bdwyertech/rs-wineventlog"
 
 [profile.release]
 strip = true
@@ -16,7 +18,7 @@ lto = "thin"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
-windows = { version = "0.58", features = [
+windows = { version = "0.62", features = [
     "Win32_System_EventLog",
     "Win32_System_Threading",
     "Win32_Security",
@@ -26,7 +28,7 @@ windows = { version = "0.58", features = [
 ] }
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9"
-roxmltree = "0.17"
+roxmltree = "0.21"
 serde_json = "1.0"
 
 [target.'cfg(not(windows))'.dependencies]
