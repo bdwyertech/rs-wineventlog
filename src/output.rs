@@ -1,9 +1,9 @@
 use std::fs::{File, OpenOptions};
-use std::io::{self, StdoutLock, Write};
+use std::io::{self, Stdout, Write};
 
 pub enum Output {
     File(File),
-    Stdout(StdoutLock<'static>),
+    Stdout(Stdout),
 }
 
 impl Write for Output {
@@ -25,6 +25,6 @@ impl Write for Output {
 pub fn create(path: Option<&str>) -> Result<Output, Box<dyn std::error::Error>> {
     Ok(match path {
         Some(p) => Output::File(OpenOptions::new().create(true).append(true).open(p)?),
-        None => Output::Stdout(Box::leak(Box::new(io::stdout())).lock()),
+        None => Output::Stdout(io::stdout()),
     })
 }
