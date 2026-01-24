@@ -2,8 +2,10 @@ use crate::{output::Output, privilege, xml};
 use glob_match::glob_match;
 use serde_json::Value as JsonValue;
 use std::io::Write;
+use std::sync::{Arc, Mutex};
+use std::thread;
 use windows::Win32::System::EventLog::*;
-use windows::Win32::System::Threading::CreateEventW;
+use windows::Win32::System::Threading::{CreateEventW, ResetEvent, WaitForSingleObject, INFINITE};
 use windows::core::PCWSTR;
 
 pub fn list_channels() -> Result<(), Box<dyn std::error::Error>> {
@@ -34,7 +36,7 @@ fn get_available_channels() -> Result<Vec<String>, Box<dyn std::error::Error>> {
 
 pub fn monitor(
     channels: &[String],
-    mut output: Output,
+    output: Output,
     pretty: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let available = get_available_channels()?;
@@ -63,61 +65,92 @@ pub fn monitor(
         return Err("No valid channels to subscribe to".into());
     }
 
-    let signal = unsafe { CreateEventW(None, false, false, None)? };
+    let output = Arc::new(Mutex::new(output));
+    let mut handles = Vec::new();
 
-    let subscriptions: Vec<_> = valid_channels
-        .iter()
-        .filter_map(|ch| {
-            let wide: Vec<u16> = ch.encode_utf16().chain(std::iter::once(0)).collect();
-            unsafe {
-                match EvtSubscribe(
-                    None,
-                    Some(signal),
-                    PCWSTR(wide.as_ptr()),
-                    PCWSTR::null(),
-                    None,
-                    None,
-                    None,
-                    EvtSubscribeToFutureEvents.0 as u32,
-                ) {
-                    Ok(h) => {
-                        println!("Subscribed to: {}", ch);
-                        Some(h)
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to subscribe to {}: {:?}", ch, e);
-                        if e.code() == windows::Win32::Foundation::E_ACCESSDENIED {
-                            eprintln!("Access denied — attempting to relaunch elevated");
-                            let _ = privilege::try_elevate();
-                            std::process::exit(1);
-                        }
-                        None
-                    }
-                }
+    for ch in valid_channels {
+        let output = Arc::clone(&output);
+        let handle = thread::spawn(move || {
+            if let Err(e) = monitor_channel(&ch, output, pretty) {
+                eprintln!("Error monitoring {}: {}", ch, e);
             }
-        })
-        .collect();
-
-    if subscriptions.is_empty() {
-        return Err("No channels subscribed".into());
+        });
+        handles.push(handle);
     }
 
+    for handle in handles {
+        let _ = handle.join();
+    }
+
+    Ok(())
+}
+
+fn monitor_channel(
+    channel: &str,
+    output: Arc<Mutex<Output>>,
+    pretty: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Create manual-reset event (TRUE for manual reset)
+    let signal = unsafe { CreateEventW(None, true, true, None)? };
+    let wide: Vec<u16> = channel.encode_utf16().chain(std::iter::once(0)).collect();
+
+    let subscription = unsafe {
+        match EvtSubscribe(
+            None,
+            Some(signal),
+            PCWSTR(wide.as_ptr()),
+            PCWSTR::null(),
+            None,
+            None,
+            None,
+            EvtSubscribeToFutureEvents.0 as u32,
+        ) {
+            Ok(h) => {
+                println!("Subscribed to: {}", channel);
+                h
+            }
+            Err(e) => {
+                if e.code() == windows::Win32::Foundation::E_ACCESSDENIED {
+                    eprintln!("Access denied — attempting to relaunch elevated");
+                    let _ = privilege::try_elevate();
+                    std::process::exit(1);
+                }
+                return Err(e.into());
+            }
+        }
+    };
+
     loop {
-        for sub in &subscriptions {
-            unsafe {
+        unsafe {
+            // Wait for signal (blocks until Windows signals new events)
+            WaitForSingleObject(signal, INFINITE);
+
+            // Drain all available events
+            loop {
                 let mut events = [EVT_HANDLE::default(); 10];
                 let mut returned = 0u32;
                 let events_slice =
                     std::slice::from_raw_parts_mut(events.as_mut_ptr() as *mut isize, events.len());
-                if EvtNext(*sub, events_slice, 100, 0, &mut returned).is_ok() {
+                
+                // Use INFINITE timeout like Microsoft example
+                if EvtNext(subscription, events_slice, INFINITE, 0, &mut returned).is_ok() && returned > 0 {
                     for i in 0..returned as usize {
                         if let Some(json) = render_event(events[i], pretty) {
-                            writeln!(output, "{}", json)?;
+                            if let Ok(mut out) = output.lock() {
+                                let _ = writeln!(*out, "{}", json);
+                                let _ = out.flush();
+                            }
                         }
                         let _ = EvtClose(events[i]);
                     }
+                } else {
+                    // No more events, break out of drain loop
+                    break;
                 }
             }
+
+            // Manually reset the event after draining all events
+            let _ = ResetEvent(signal);
         }
     }
 }
