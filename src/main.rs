@@ -46,6 +46,28 @@ pub enum Commands {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
+    // Initialize logger
+    if atty::is(atty::Stream::Stderr) && false {
+        // Human-readable format for interactive use (TTY)
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+            .format_timestamp_millis()
+            .init();
+    } else {
+        // JSON format (Not TTY)
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+            .format(|buf, record| {
+                use std::io::Write;
+                writeln!(
+                    buf,
+                    r#"{{"timestamp":"{}","level":"{}","message":"{}"}}"#,
+                    chrono::Utc::now().to_rfc3339(),
+                    record.level(),
+                    record.args()
+                )
+            })
+            .init();
+    }
+
     if cli.version {
         let git_commit = built_info::GIT_COMMIT_HASH_SHORT;
         let release_ver = option_env!("BUILD_VERSION").unwrap_or(built_info::PKG_VERSION);

@@ -1,11 +1,12 @@
 use crate::{output::Output, privilege, xml};
 use glob_match::glob_match;
+use log::{error, info, warn};
 use serde_json::Value as JsonValue;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use windows::Win32::System::EventLog::*;
-use windows::Win32::System::Threading::{CreateEventW, ResetEvent, WaitForSingleObject, INFINITE};
+use windows::Win32::System::Threading::{CreateEventW, INFINITE, ResetEvent, WaitForSingleObject};
 use windows::core::PCWSTR;
 
 pub fn list_channels() -> Result<(), Box<dyn std::error::Error>> {
@@ -40,24 +41,25 @@ pub fn monitor(
     pretty: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let available = get_available_channels()?;
-    
+
     let mut valid_channels = Vec::new();
     for pattern in channels {
         if pattern.contains('*') || pattern.contains('?') {
-            let matches: Vec<_> = available.iter()
+            let matches: Vec<_> = available
+                .iter()
                 .filter(|ch| glob_match(pattern, ch))
                 .cloned()
                 .collect();
             if matches.is_empty() {
-                eprintln!("Warning: No channels match pattern '{}'", pattern);
+                warn!("No channels match pattern '{}'", pattern);
             } else {
-                println!("Pattern '{}' matched {} channel(s)", pattern, matches.len());
+                info!("Pattern '{}' matched {} channel(s)", pattern, matches.len());
                 valid_channels.extend(matches);
             }
         } else if available.contains(pattern) {
             valid_channels.push(pattern.clone());
         } else {
-            eprintln!("Warning: Channel '{}' does not exist, skipping", pattern);
+            warn!("Channel '{}' does not exist, skipping", pattern);
         }
     }
 
@@ -72,7 +74,7 @@ pub fn monitor(
         let output = Arc::clone(&output);
         let handle = thread::spawn(move || {
             if let Err(e) = monitor_channel(&ch, output, pretty) {
-                eprintln!("Error monitoring {}: {}", ch, e);
+                error!("Error monitoring {}: {}", ch, e);
             }
         });
         handles.push(handle);
@@ -106,7 +108,7 @@ fn monitor_channel(
             EvtSubscribeToFutureEvents.0 as u32,
         ) {
             Ok(h) => {
-                println!("Subscribed to: {}", channel);
+                info!("Subscribed to: {}", channel);
                 h
             }
             Err(e) => {
@@ -115,7 +117,7 @@ fn monitor_channel(
                     return Ok(());
                 }
                 if e.code() == windows::Win32::Foundation::E_ACCESSDENIED {
-                    eprintln!("Access denied — attempting to relaunch elevated");
+                    error!("Access denied — attempting to relaunch elevated");
                     let _ = privilege::try_elevate();
                     std::process::exit(1);
                 }
@@ -135,13 +137,19 @@ fn monitor_channel(
                 let mut returned = 0u32;
                 let events_slice =
                     std::slice::from_raw_parts_mut(events.as_mut_ptr() as *mut isize, events.len());
-                
+
                 // Use INFINITE timeout like Microsoft example
-                if EvtNext(subscription, events_slice, INFINITE, 0, &mut returned).is_ok() && returned > 0 {
+                if EvtNext(subscription, events_slice, INFINITE, 0, &mut returned).is_ok()
+                    && returned > 0
+                {
                     for i in 0..returned as usize {
                         if let Some(json) = render_event(events[i], pretty) {
                             if let Ok(mut out) = output.lock() {
-                                let _ = writeln!(*out, "{}", json);
+                                if writeln!(*out, "{}", json).is_err() {
+                                    error!("Failed to write event, output may be closed");
+                                    let _ = EvtClose(events[i]);
+                                    return Ok(());
+                                }
                                 let _ = out.flush();
                             }
                         }
@@ -187,15 +195,16 @@ unsafe fn render_event(event: EVT_HANDLE, pretty: bool) -> Option<String> {
             let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
             let xml = String::from_utf16_lossy(&buffer[..len]);
             let mut v = xml::parse_to_json(&xml)?;
-            
+
             // Get provider name from parsed JSON
-            let provider_name = v.get("Provider")
+            let provider_name = v
+                .get("Provider")
                 .and_then(|p| p.get("@Name"))
                 .and_then(|n| n.as_str())
                 .map(|s| s.to_string());
-            
+
             enrich_metadata(event, &mut v);
-            
+
             // Add friendly message with provider metadata
             if let Some(prov) = provider_name {
                 if let Some(msg) = format_event_message(event, &prov) {
@@ -204,7 +213,7 @@ unsafe fn render_event(event: EVT_HANDLE, pretty: bool) -> Option<String> {
                     }
                 }
             }
-            
+
             if pretty {
                 serde_json::to_string_pretty(&v).ok()
             } else {
@@ -273,13 +282,17 @@ unsafe fn format_message(event: EVT_HANDLE, format_id: EVT_FORMAT_MESSAGE_FLAGS)
 
 unsafe fn format_event_message(event: EVT_HANDLE, provider_name: &str) -> Option<String> {
     unsafe {
-        let provider_wide: Vec<u16> = provider_name.encode_utf16().chain(std::iter::once(0)).collect();
+        let provider_wide: Vec<u16> = provider_name
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
 
         // Open provider metadata
-        let metadata = match EvtOpenPublisherMetadata(None, PCWSTR(provider_wide.as_ptr()), None, 0, 0) {
-            Ok(m) => m,
-            Err(_) => return None,
-        };
+        let metadata =
+            match EvtOpenPublisherMetadata(None, PCWSTR(provider_wide.as_ptr()), None, 0, 0) {
+                Ok(m) => m,
+                Err(_) => return None,
+            };
 
         // Format message with provider metadata
         let mut msg_buffer_size = 0u32;
@@ -310,7 +323,10 @@ unsafe fn format_event_message(event: EVT_HANDLE, provider_name: &str) -> Option
         )
         .is_ok()
         {
-            let len = msg_buffer.iter().position(|&c| c == 0).unwrap_or(msg_buffer.len());
+            let len = msg_buffer
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(msg_buffer.len());
             Some(String::from_utf16_lossy(&msg_buffer[..len]))
         } else {
             None
