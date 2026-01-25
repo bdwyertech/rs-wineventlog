@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use windows::Win32::System::EventLog::*;
 use windows::Win32::System::Threading::{CreateEventW, ResetEvent, WaitForSingleObject};
+use windows::Win32::Foundation::CloseHandle;
 use windows::core::PCWSTR;
 
 pub fn list_channels() -> Result<(), Box<dyn std::error::Error>> {
@@ -174,6 +175,7 @@ fn monitor_channel(
                                     error!("Failed to write event, output may be closed");
                                     let _ = EvtClose(events[i]);
                                     let _ = EvtClose(subscription);
+                                    let _ = CloseHandle(signal);
                                     return Ok(());
                                 }
                                 let _ = out.flush();
@@ -192,6 +194,7 @@ fn monitor_channel(
     // Clean up handles
     unsafe {
         let _ = EvtClose(subscription);
+        let _ = CloseHandle(signal);
     }
 
     info!("Stopped monitoring: {}", channel);
