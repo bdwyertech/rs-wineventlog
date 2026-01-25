@@ -54,7 +54,13 @@ jobs:
           BUILD_VERSION: ${{ steps.git.outputs.SOURCE_TAG }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Attest Checksums
+      - name: Attest Build Provenance
         uses: actions/attest-build-provenance@v3
         with:
-          subject-checksums: ./dist/checksums.txt
+          subject-path: './dist/*.exe'
+
+      - name: Attest SBOMs
+        uses: actions/attest-sbom@v2
+        with:
+          subject-path: './dist/*.exe'
+          sbom-path: './dist/*.sbom.json'
