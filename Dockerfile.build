@@ -2,4 +2,7 @@ FROM goreleaser/goreleaser:latest AS goreleaser
 
 FROM ghcr.io/bdwyertech/rust-crosscompile:latest
 
+# Install Syft for SBOM generation
+RUN curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+
 COPY --from=goreleaser /usr/bin/goreleaser /usr/bin/goreleaser

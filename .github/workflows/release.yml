@@ -57,10 +57,10 @@ jobs:
       - name: Attest Build Provenance
         uses: actions/attest-build-provenance@v3
         with:
-          subject-path: './dist/*.exe'
+          subject-path: './dist/*/wineventlog.exe'
 
       - name: Attest SBOMs
         uses: actions/attest-sbom@v2
         with:
-          subject-path: './dist/*.exe'
+          subject-path: './dist/*/*.exe'
           sbom-path: './dist/*.sbom.json'

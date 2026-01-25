@@ -6,4 +6,4 @@ services:
     working_dir: /app
     volumes:
       - ./:/app
-    command: /usr/bin/goreleaser --snapshot --clean --skip sign,sbom
+    command: /usr/bin/goreleaser --snapshot --clean --skip sign
