@@ -110,6 +110,10 @@ fn monitor_channel(
                 h
             }
             Err(e) => {
+                // Silently skip unsupported channels (Analytic/Debug)
+                if e.code() == windows::Win32::Foundation::ERROR_NOT_SUPPORTED.to_hresult() {
+                    return Ok(());
+                }
                 if e.code() == windows::Win32::Foundation::E_ACCESSDENIED {
                     eprintln!("Access denied — attempting to relaunch elevated");
                     let _ = privilege::try_elevate();
