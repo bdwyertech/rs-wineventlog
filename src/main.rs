@@ -89,7 +89,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => {
             let config = config::load(cli.config)?;
             let output = output::create(config.output_file.as_deref())?;
-            eventlog::monitor(&config.channels, output, cli.pretty_json)?;
+            eventlog::monitor(&config.channels, output, cli.pretty_json, config.batch_size)?;
         }
     }
 

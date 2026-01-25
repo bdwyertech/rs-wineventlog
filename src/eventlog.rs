@@ -41,6 +41,7 @@ pub fn monitor(
     channels: &[String],
     output: Output,
     pretty: bool,
+    batch_size: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let available = get_available_channels()?;
 
@@ -88,7 +89,7 @@ pub fn monitor(
         let output = Arc::clone(&output);
         let shutdown = Arc::clone(&shutdown);
         let handle = thread::spawn(move || {
-            if let Err(e) = monitor_channel(&ch, output, pretty, shutdown) {
+            if let Err(e) = monitor_channel(&ch, output, pretty, shutdown, batch_size) {
                 error!("Error monitoring {}: {}", ch, e);
             }
         });
@@ -113,6 +114,7 @@ fn monitor_channel(
     output: Arc<Mutex<Output>>,
     pretty: bool,
     shutdown: Arc<AtomicBool>,
+    batch_size: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Create manual-reset event (TRUE for manual reset)
     let signal = unsafe { CreateEventW(None, true, true, None)? };
@@ -163,7 +165,7 @@ fn monitor_channel(
 
             // Drain all available events
             loop {
-                let mut events = [EVT_HANDLE::default(); 10];
+                let mut events = vec![EVT_HANDLE::default(); batch_size];
                 let mut returned = 0u32;
                 let events_slice =
                     std::slice::from_raw_parts_mut(events.as_mut_ptr() as *mut isize, events.len());
