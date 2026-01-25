@@ -47,7 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     // Initialize logger
-    if atty::is(atty::Stream::Stderr) && false {
+    if atty::is(atty::Stream::Stderr) {
         // Human-readable format for interactive use (TTY)
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
             .format_timestamp_millis()
