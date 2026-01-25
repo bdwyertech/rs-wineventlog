@@ -3,10 +3,11 @@ use glob_match::glob_match;
 use log::{error, info, warn};
 use serde_json::Value as JsonValue;
 use std::io::Write;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use windows::Win32::System::EventLog::*;
-use windows::Win32::System::Threading::{CreateEventW, INFINITE, ResetEvent, WaitForSingleObject};
+use windows::Win32::System::Threading::{CreateEventW, ResetEvent, WaitForSingleObject};
 use windows::core::PCWSTR;
 
 pub fn list_channels() -> Result<(), Box<dyn std::error::Error>> {
@@ -68,12 +69,21 @@ pub fn monitor(
     }
 
     let output = Arc::new(Mutex::new(output));
+    let shutdown = Arc::new(AtomicBool::new(false));
     let mut handles = Vec::new();
+
+    // Set up Ctrl+C handler
+    let shutdown_signal = Arc::clone(&shutdown);
+    ctrlc::set_handler(move || {
+        info!("Received shutdown signal, stopping...");
+        shutdown_signal.store(true, Ordering::SeqCst);
+    })?;
 
     for ch in valid_channels {
         let output = Arc::clone(&output);
+        let shutdown = Arc::clone(&shutdown);
         let handle = thread::spawn(move || {
-            if let Err(e) = monitor_channel(&ch, output, pretty) {
+            if let Err(e) = monitor_channel(&ch, output, pretty, shutdown) {
                 error!("Error monitoring {}: {}", ch, e);
             }
         });
@@ -84,6 +94,12 @@ pub fn monitor(
         let _ = handle.join();
     }
 
+    // Flush output before exiting
+    if let Ok(mut out) = output.lock() {
+        let _ = out.flush();
+    }
+
+    info!("Shutdown complete");
     Ok(())
 }
 
@@ -91,6 +107,7 @@ fn monitor_channel(
     channel: &str,
     output: Arc<Mutex<Output>>,
     pretty: bool,
+    shutdown: Arc<AtomicBool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Create manual-reset event (TRUE for manual reset)
     let signal = unsafe { CreateEventW(None, true, true, None)? };
@@ -126,10 +143,18 @@ fn monitor_channel(
         }
     };
 
-    loop {
+    while !shutdown.load(Ordering::SeqCst) {
         unsafe {
-            // Wait for signal (blocks until Windows signals new events)
-            WaitForSingleObject(signal, INFINITE);
+            // Wait for signal with 1 second timeout to check shutdown flag
+            let wait_result = WaitForSingleObject(signal, 1000);
+            
+            // WAIT_OBJECT_0 = 0, anything else is timeout or error
+            if wait_result.0 != 0 {
+                continue;
+            }
+
+            // Manually reset the event
+            let _ = ResetEvent(signal);
 
             // Drain all available events
             loop {
@@ -138,8 +163,8 @@ fn monitor_channel(
                 let events_slice =
                     std::slice::from_raw_parts_mut(events.as_mut_ptr() as *mut isize, events.len());
 
-                // Use INFINITE timeout like Microsoft example
-                if EvtNext(subscription, events_slice, INFINITE, 0, &mut returned).is_ok()
+                // Use short timeout to avoid blocking on shutdown
+                if EvtNext(subscription, events_slice, 100, 0, &mut returned).is_ok()
                     && returned > 0
                 {
                     for i in 0..returned as usize {
@@ -148,6 +173,7 @@ fn monitor_channel(
                                 if writeln!(*out, "{}", json).is_err() {
                                     error!("Failed to write event, output may be closed");
                                     let _ = EvtClose(events[i]);
+                                    let _ = EvtClose(subscription);
                                     return Ok(());
                                 }
                                 let _ = out.flush();
@@ -160,11 +186,16 @@ fn monitor_channel(
                     break;
                 }
             }
-
-            // Manually reset the event after draining all events
-            let _ = ResetEvent(signal);
         }
     }
+
+    // Clean up handles
+    unsafe {
+        let _ = EvtClose(subscription);
+    }
+
+    info!("Stopped monitoring: {}", channel);
+    Ok(())
 }
 
 unsafe fn render_event(event: EVT_HANDLE, pretty: bool) -> Option<String> {
