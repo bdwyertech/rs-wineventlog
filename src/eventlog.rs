@@ -6,9 +6,9 @@ use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use windows::Win32::Foundation::CloseHandle;
 use windows::Win32::System::EventLog::*;
 use windows::Win32::System::Threading::{CreateEventW, ResetEvent, WaitForSingleObject};
-use windows::Win32::Foundation::CloseHandle;
 use windows::core::PCWSTR;
 
 pub fn list_channels() -> Result<(), Box<dyn std::error::Error>> {
@@ -68,6 +68,10 @@ pub fn monitor(
     if valid_channels.is_empty() {
         return Err("No valid channels to subscribe to".into());
     }
+
+    // Remove duplicates
+    valid_channels.sort();
+    valid_channels.dedup();
 
     let output = Arc::new(Mutex::new(output));
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -148,7 +152,7 @@ fn monitor_channel(
         unsafe {
             // Wait for signal with 1 second timeout to check shutdown flag
             let wait_result = WaitForSingleObject(signal, 1000);
-            
+
             // WAIT_OBJECT_0 = 0, anything else is timeout or error
             if wait_result.0 != 0 {
                 continue;
