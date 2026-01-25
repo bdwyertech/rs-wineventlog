@@ -57,16 +57,16 @@ jobs:
       - name: Attest Build Provenance
         uses: actions/attest-build-provenance@v3
         with:
-          subject-path: './dist/*/wineventlog.exe'
+          subject-path: './dist/*'
 
       - name: Attest SBOM - AMD64
         uses: actions/attest-sbom@v3
         with:
-          subject-path: './dist/wevt_x86_64*/wineventlog.exe'
+          subject-path: './dist/wevt_x86_64*/*.exe'
           sbom-path: './dist/wineventlog_windows_amd64.zip.sbom.json'
 
       - name: Attest SBOM - ARM64
         uses: actions/attest-sbom@v3
         with:
-          subject-path: './dist/wevt_aarch64*/wineventlog.exe'
+          subject-path: './dist/wevt_aarch64*/*.exe'
           sbom-path: './dist/wineventlog_windows_arm64.zip.sbom.json'
